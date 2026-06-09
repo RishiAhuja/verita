@@ -1,0 +1,32 @@
+# dependencies
+node_modules
+.pnpm-store
+
+# next.js
+.next
+out
+
+# env
+.env
+.env.local
+.env.*.local
+
+# debug
+npm-debug.log*
+pnpm-debug.log*
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# prisma generated
+packages/database/generated
+
+# test
+coverage
+
+# os
+.DS_Store
+
+# docker
+*.log
