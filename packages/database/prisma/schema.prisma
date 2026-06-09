@@ -1,0 +1,231 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum CustomerStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  VOID
+}
+
+enum LineItemType {
+  USAGE_TIER
+  CREDIT
+  ADJUSTMENT
+  CORRECTION
+}
+
+enum AuditAction {
+  CREDIT_ISSUED
+  LINE_ITEM_OVERRIDE
+}
+
+enum JobName {
+  USAGE_AGGREGATOR
+  INVOICE_GENERATOR
+}
+
+model Customer {
+  id           String         @id @default(uuid()) @db.Uuid
+  name         String
+  email        String         @unique
+  status       CustomerStatus @default(ACTIVE)
+  pricePlanId  String         @map("price_plan_id") @db.Uuid
+  createdAt    DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  pricePlan    PricePlan      @relation(fields: [pricePlanId], references: [id])
+  apiKeys      ApiKey[]
+  usageEvents  UsageEvent[]
+  usageWindows UsageWindow[]
+  invoices     Invoice[]
+  credits      Credit[]
+
+  @@map("customers")
+}
+
+model ApiKey {
+  id         String    @id @default(uuid()) @db.Uuid
+  customerId String    @map("customer_id") @db.Uuid
+  keyHash    String    @unique @map("key_hash")
+  prefix     String
+  lastFour   String    @map("last_four")
+  name       String?
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  revokedAt  DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  customer     Customer      @relation(fields: [customerId], references: [id])
+  usageEvents  UsageEvent[]
+  usageWindows UsageWindow[]
+
+  @@index([customerId])
+  @@map("api_keys")
+}
+
+model PricePlan {
+  id          String      @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tiers     PriceTier[]
+  customers Customer[]
+
+  @@map("price_plans")
+}
+
+/// unitPriceMicroCents: price per unit in micro-cents (1 cent = 10,000 micro-cents; $0.001/unit = 1,000 micro-cents)
+model PriceTier {
+  id                   String @id @default(uuid()) @db.Uuid
+  pricePlanId          String @map("price_plan_id") @db.Uuid
+  tierOrder            Int    @map("tier_order")
+  /// null means unlimited (final tier)
+  upToUnits            Int?   @map("up_to_units")
+  unitPriceMicroCents  Int    @map("unit_price_micro_cents")
+
+  pricePlan PricePlan @relation(fields: [pricePlanId], references: [id], onDelete: Cascade)
+
+  @@unique([pricePlanId, tierOrder])
+  @@map("price_tiers")
+}
+
+model UsageEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  requestId  String   @unique @map("request_id")
+  customerId String   @map("customer_id") @db.Uuid
+  apiKeyId   String   @map("api_key_id") @db.Uuid
+  endpoint   String
+  units      Int
+  occurredAt DateTime @map("occurred_at") @db.Timestamptz(6)
+  receivedAt DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  apiKey   ApiKey   @relation(fields: [apiKeyId], references: [id])
+
+  @@index([customerId, occurredAt])
+  @@index([apiKeyId, occurredAt])
+  @@index([occurredAt])
+  @@map("usage_events")
+}
+
+model UsageWindow {
+  id         String   @id @default(uuid()) @db.Uuid
+  customerId String   @map("customer_id") @db.Uuid
+  apiKeyId   String   @map("api_key_id") @db.Uuid
+  endpoint   String
+  hourStart  DateTime @map("hour_start") @db.Timestamptz(6)
+  totalUnits Int      @map("total_units")
+  eventCount Int      @map("event_count")
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  apiKey   ApiKey   @relation(fields: [apiKeyId], references: [id])
+
+  @@unique([customerId, apiKeyId, endpoint, hourStart])
+  @@index([customerId, hourStart])
+  @@map("usage_windows")
+}
+
+model Invoice {
+  id              String        @id @default(uuid()) @db.Uuid
+  customerId      String        @map("customer_id") @db.Uuid
+  periodStart     DateTime      @map("period_start") @db.Timestamptz(6)
+  periodEnd       DateTime      @map("period_end") @db.Timestamptz(6)
+  status          InvoiceStatus @default(DRAFT)
+  totalAmountCents Int          @map("total_amount_cents")
+  issuedAt        DateTime?     @map("issued_at") @db.Timestamptz(6)
+  paidAt          DateTime?     @map("paid_at") @db.Timestamptz(6)
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer      Customer           @relation(fields: [customerId], references: [id])
+  lineItems     InvoiceLineItem[]
+  webhookEvents WebhookEvent[]
+
+  @@unique([customerId, periodStart, periodEnd])
+  @@index([customerId, status])
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id                  String       @id @default(uuid()) @db.Uuid
+  invoiceId           String       @map("invoice_id") @db.Uuid
+  type                LineItemType
+  description         String
+  quantityUnits       Int?         @map("quantity_units")
+  unitPriceMicroCents Int?         @map("unit_price_micro_cents")
+  amountCents         Int          @map("amount_cents")
+  tierOrder           Int?         @map("tier_order")
+  createdAt           DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  credit  Credit?
+
+  @@index([invoiceId])
+  @@map("invoice_line_items")
+}
+
+model Credit {
+  id               String   @id @default(uuid()) @db.Uuid
+  customerId       String   @map("customer_id") @db.Uuid
+  amountCents      Int      @map("amount_cents")
+  reason           String
+  idempotencyKey   String   @unique @map("idempotency_key")
+  actorId          String   @map("actor_id")
+  lineItemId       String?  @unique @map("line_item_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer Customer           @relation(fields: [customerId], references: [id])
+  lineItem InvoiceLineItem?   @relation(fields: [lineItemId], references: [id])
+
+  @@index([customerId])
+  @@map("credits")
+}
+
+model WebhookEvent {
+  id              String   @id @default(uuid()) @db.Uuid
+  providerEventId String   @unique @map("provider_event_id")
+  invoiceId       String   @map("invoice_id") @db.Uuid
+  payload         Json
+  processedAt     DateTime @default(now()) @map("processed_at") @db.Timestamptz(6)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+
+  @@map("webhook_events")
+}
+
+model AuditLog {
+  id              String      @id @default(uuid()) @db.Uuid
+  action          AuditAction
+  actorId         String      @map("actor_id")
+  entityType      String      @map("entity_type")
+  entityId        String      @map("entity_id") @db.Uuid
+  reason          String
+  beforeValue     Json        @map("before_value")
+  afterValue      Json        @map("after_value")
+  idempotencyKey  String?     @unique @map("idempotency_key")
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([entityType, entityId, createdAt])
+  @@map("audit_logs")
+}
+
+model JobState {
+  id         String   @id @default(uuid()) @db.Uuid
+  jobName    JobName  @unique @map("job_name")
+  watermark  DateTime @map("watermark") @db.Timestamptz(6)
+  lockedAt   DateTime? @map("locked_at") @db.Timestamptz(6)
+  lockedBy   String?  @map("locked_by")
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("job_states")
+}
